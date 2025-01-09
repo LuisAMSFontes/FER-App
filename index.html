@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real-Time Emotion Detection</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        #framesContainer {
+            display: flex; /* Use flexbox to arrange thumbnails horizontally */
+            flex-wrap: wrap; /* Allow wrapping to the next line if necessary */
+            justify-content: center; /* Center the thumbnails */
+            gap: 10px; /* Optional spacing between thumbnails */
+            margin: 20px 0; /* Margin above and below the thumbnail container */
+        }
+
+        #framesContainer img {
+            width: 200px; /* Set a fixed width for thumbnails */
+            height: auto; /* Keep aspect ratio */
+            cursor: pointer; /* Change cursor to pointer for clickable images */
+        }
+
+        .selected {
+            border: 4px solid blue; /* Border for selected image */
+        }
+
+        #emotionForm {
+            display: none; /* Initially hide the form */
+            margin-top: 20px; /* Add some margin to the top */
+            text-align: center; /* Center the form */
+        }
+
+        #thumbnailsSection {
+            display: none; /* Initially hide the thumbnails section */
+        }
+    </style>
+    <script>
+        let chart; // Global chart variable
+        const maxDataPoints = 11; // Adjusted to 11 to show -10 to 0
+        const frameHistory = []; // Queue for storing the last 10 frames
+        const displayedFrames = []; // Queue for frames to display
+        const valueHistory = []; // Queue for storing the last 10 emotion confidence values
+        let initChart = false; // Flag to check if chart has been initialized
+        let selectedFrameData; // Store the selected frame data for reporting
+        let currentlySelectedImage = null; // Track the currently selected image
+
+        async function fetchAndUpdateEmotions() {
+            try {
+                const response = await fetch('/emotions_graph', { method: 'GET' });
+                const emotionData = await response.json();
+
+                //console.log("Fetched emotion data:", emotionData);
+
+                // Update frame and emotion history queues
+                const newFrame = document.querySelector("img").src;
+                if (frameHistory.length >= maxDataPoints) {
+                    frameHistory.shift();
+                }
+                frameHistory.push(newFrame);
+
+                if (valueHistory.length >= maxDataPoints) {
+                    valueHistory.shift();
+                }
+                valueHistory.push(emotionData);
+
+                //console.log("Current value history:", valueHistory);
+
+                // Initialize the chart once we have initial data in valueHistory
+                if (!initChart && valueHistory.length > 0) {
+                    initializeChart();
+                    initChart = true; // Set flag to avoid reinitializing
+                } else if (initChart) {
+                    updateChart(); // Only update after chart is initialized
+                }
+            } catch (error) {
+                console.error('Error fetching emotion data:', error);
+            }
+        }
+
+        function initializeChart() {
+            const ctx = document.getElementById('emotionChart').getContext('2d');
+            const colors = [
+                'rgba(255, 99, 132, 0.8)',   // Angry Red
+                'rgba(75, 192, 192, 0.8)',   // Disgust Green
+                'rgba(255, 159, 64, 0.8)',   // Fear Orange
+                'rgba(255, 206, 86, 0.8)',   // Happy Yellow   
+                'rgba(153, 102, 255, 0.8)',  // Neutral Purple
+                'rgba(54, 162, 235, 0.8)',   // Sad Blue
+                'rgba(255, 0, 255, 0.8)'     // Surprise Magenta
+            ];
+
+            const datasets = Object.keys(valueHistory[0]).map((emotion, index) => ({
+                label: emotion,
+                data: Array(maxDataPoints).fill(null), // Initialize with empty data points
+                fill: false,
+                borderColor: colors[index % colors.length], // Assign unique color to each emotion
+                backgroundColor: colors[index % colors.length],
+                tension: 0.2
+            }));
+
+            chart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: Array.from({ length: maxDataPoints }, (_, i) => -10 + i), // Set labels from -10 to 0
+                    datasets: datasets
+                },
+                options: {
+                    animation: {
+                        duration: 50 // Set animation duration to a small value to keep chart responsive
+                    },
+                    scales: {
+                        x: {
+                            title: {
+                                display: true,
+                                text: 'Time (s)'
+                            }
+                        },
+                        y: {
+                            beginAtZero: true,
+                            max: 1,
+                            title: {
+                                display: true,
+                                text: 'Confidence'
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        function updateChart() {
+            // Update chart’s datasets with the latest emotion data
+            chart.data.datasets.forEach((dataset) => {
+                const emotion = dataset.label;
+                dataset.data = valueHistory.map((values) => values[emotion] || 0); // Get history for each emotion
+            });
+
+            chart.data.labels = Array.from({ length: maxDataPoints }, (_, i) => -10 + i);
+            chart.update(); // Refresh the chart with updated data
+        }
+
+        // Fetch and update emotions every 1 second
+        setInterval(fetchAndUpdateEmotions, 1000);
+
+        // Function to handle feedback submission
+        async function submitFeedback(event) {
+            event.preventDefault(); // Prevent default form submission
+
+            const feedback = document.getElementById('feedbackInput').value;
+            if (feedback) {
+                try {
+                    const response = await fetch('/submit_feedback', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/x-www-form-urlencoded'
+                        },
+                        body: `feedback=${encodeURIComponent(feedback)}`
+                    });
+
+                    const result = await response.text();
+                    alert(result); // Show the result of the feedback submission
+                    document.getElementById('feedbackInput').value = ''; // Clear the input field
+                } catch (error) {
+                    console.error('Error submitting feedback:', error);
+                }
+            }
+        }
+
+        async function displayLastFrames() {
+            try {
+                const response = await fetch('/last_frames', { method: 'GET' });
+                const frames = await response.json();
+
+                // Clear previous displayed frames
+                displayedFrames.length = 0; // Clear previous frames
+
+                const framesContainer = document.getElementById('framesContainer');
+                framesContainer.innerHTML = ''; // Clear previous frames
+
+                frames.forEach(({ frame }) => {
+                    const img = document.createElement('img');
+                    img.src = `data:image/jpeg;base64,${frame}`;
+                    img.onclick = () => selectFrame(`data:image/jpeg;base64,${frame}`, img); // Pass the img element
+
+                    // Append image to container
+                    framesContainer.appendChild(img);
+                });
+
+                // Show the thumbnails section when the frames are displayed
+                document.getElementById('thumbnailsSection').style.display = 'block';
+            } catch (error) {
+                console.error('Error fetching last frames:', error);
+            }
+        }
+
+        function selectFrame(frameData, imgElement) {
+            // Deselect the previously selected image if there is one
+            if (currentlySelectedImage) {
+                currentlySelectedImage.classList.remove('selected');
+            }
+
+            // Select the new image and apply the border
+            imgElement.classList.add('selected');
+            currentlySelectedImage = imgElement; // Update the currently selected image
+            selectedFrameData = frameData; // Store the selected frame data
+            document.getElementById('emotionForm').style.display = 'block'; // Show the form
+        }
+
+        async function submitEmotionReport(event) {
+            event.preventDefault(); // Prevent default form submission
+
+            const emotion = document.getElementById('emotionInput').value;
+            if (emotion) {
+                try {
+                    const response = await fetch('/report_misclassification', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            frame: selectedFrameData,
+                            emotion: emotion
+                        })
+                    });
+
+                    const result = await response.json();
+                    alert(result.message); // Show the result of the report submission
+
+                    // Hide the thumbnails and form section after submission
+                    document.getElementById('thumbnailsSection').style.display = 'none'; // Hide the thumbnails
+                    document.getElementById('emotionForm').style.display = 'none'; // Hide the form after submission
+                    if (currentlySelectedImage) {
+                        currentlySelectedImage.classList.remove('selected'); // Remove the border from the selected image
+                        currentlySelectedImage = null; // Clear the selected image reference
+                    }
+                } catch (error) {
+                    console.error('Error submitting emotion report:', error);
+                }
+            }
+        }
+    </script>
+</head>
+
+<body>
+    <div style="text-align: center; margin-bottom: 20px;">
+        <img src="{{ url_for('video_feed') }}" width="50%" height="50%">
+    </div>
+
+    <div style="width: 65%; height: 25%; margin: 20px auto;">
+        <canvas id="emotionChart"></canvas>
+    </div>
+
+    <div style="text-align: center; margin: 20px;">
+        <button onclick="displayLastFrames()">Wrong emotion?</button>
+    </div>
+
+    <!-- Thumbnails section -->
+    <div id="thumbnailsSection">
+        <div id="framesContainer"></div>
+
+        <!-- Emotion Reporting Form -->
+        <form id="emotionForm">
+            <h3>Select the correct emotion:</h3>
+            <select id="emotionInput">
+                <option value="">--Select Emotion--</option>
+                <option value="angry">Angry</option>
+                <option value="disgust">Disgust</option>
+                <option value="fear">Fear</option>
+                <option value="happy">Happy</option>
+                <option value="neutral">Neutral</option>
+                <option value="sad">Sad</option>
+                <option value="surprise">Surprise</option>
+            </select>
+            <button onclick="submitEmotionReport(event)">Submit</button>
+        </form>
+    </div>
+
+    <!-- Feedback Form -->
+    <div style="text-align: center; margin: 20px;">
+        <form onsubmit="submitFeedback(event)">
+            <textarea id="feedbackInput" rows="4" cols="50" placeholder="Enter your feedback here..." required></textarea>
+            <br>
+            <button type="submit">Submit Feedback</button>
+        </form>
+    </div>
+
+    <script>
+        // Initialize last frames display
+        displayLastFrames(); // Call the function to fetch and display frames on page load
+    </script>
+</body>
+
+</html>
